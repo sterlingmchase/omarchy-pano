@@ -21,7 +21,10 @@ with tempfile.TemporaryDirectory(prefix='pano-ui-') as tmp:
     source = source.replace('    PanelWindow {', '    Window {\n        width: 1100; height: 700; contentItem.width: width; contentItem.height: height')
     source = source.replace('        panel.screen = target', '        // Offscreen mock: no native screen assignment.')
     source = re.sub(r'^        (?:anchors \{ top: true; bottom: true; left: true; right: true \}|exclusionMode:.*|WlrLayershell\..*)\n', '', source, flags=re.M)
-    source = source.replace('    function open(payload) {', '''    function qaSize(width) { panel.width = width }
+    source = source.replace('    function enqueue(action, argument) {', '    function enqueue(action, argument) {\n        if (action === "delete") qaDeleteDispatches++; if (action === "pin") qaPinnedId = argument')
+    source = source.replace('    function open(payload) {', '''    property int qaDeleteDispatches: 0
+    property string qaPinnedId: ""
+    function qaSize(width) { panel.width = width }
     function qaCheck() {
         content.children[0].ensurePolished()
         paletteFlow.parent.ensurePolished()
@@ -53,6 +56,94 @@ with tempfile.TemporaryDirectory(prefix='pano-ui-') as tmp:
         if (cards.contentX !== 0) throw new Error("Scroll exceeded start")
         key({key: Qt.Key_Right, modifiers: Qt.NoModifier, accepted: false})
         if (selectedIndex !== 1) throw new Error("Right arrow must select next card from empty search")
+    }
+    function qaWheel(delta, phase, pixels) {
+        wheelCards({pixelDelta: Qt.point(pixels ? delta : 0, 0), angleDelta: Qt.point(pixels ? 0 : delta, 0), phase: phase, device: null, accepted: false})
+    }
+    function qaMomentum() {
+        stopScrolling()
+        cards.contentX = 100
+        qaWheel(-12, Qt.ScrollUpdate, true)
+        if (cards.contentX <= 112) throw new Error("Touchpad sensitivity was not increased")
+        if (Math.abs(wheelVelocity) > cards.maximumFlickVelocity) throw new Error("Unbounded momentum")
+        qaWheel(0, Qt.ScrollEnd, true)
+        if (!cards.flicking) throw new Error("Release did not start native momentum")
+        qaWheel(12, Qt.ScrollUpdate, true)
+        if (cards.flicking || wheelVelocity <= 0) throw new Error("Reversal did not stop the old glide")
+        finishScroll()
+        select(1)
+        if (cards.flicking || wheelIdle.running) throw new Error("Keyboard navigation did not stop momentum")
+        cards.contentX = 100
+        qaWheel(-120, Qt.NoScrollPhase, false)
+        if (cards.contentX <= 100 || cards.flicking || wheelIdle.running) throw new Error("Mouse wheel must remain direct")
+        qaWheel(-12, Qt.ScrollMomentum, true)
+        qaWheel(0, Qt.ScrollEnd, true)
+        if (cards.flicking) throw new Error("System momentum received a second glide")
+        qaWheel(-12, Qt.ScrollUpdate, true)
+        lastWheelTime = Date.now() - 200
+        finishScroll()
+        if (cards.flicking) throw new Error("Stale gesture started momentum")
+        cards.contentX = cards.contentWidth - cards.width
+        qaWheel(-1000, Qt.ScrollUpdate, true)
+        finishScroll()
+        if (cards.contentX > cards.contentWidth - cards.width + 1) throw new Error("Momentum exceeded end")
+        stopScrolling()
+        cards.contentX = 100
+        qaWheel(-12, Qt.ScrollUpdate, true)
+        finishScroll()
+        settingsOpen = true
+        if (cards.flicking || wheelIdle.running) throw new Error("Settings did not stop momentum")
+        settingsOpen = false
+        qaWheel(-12, Qt.ScrollUpdate, true)
+        finishScroll()
+        query = "Python"
+        if (cards.flicking || wheelIdle.running) throw new Error("Search did not stop momentum")
+        query = ""
+    }
+    function qaPin() {
+        selectedIndex = 0
+        cards.forceLayout()
+        var focused = cards.itemAtIndex(1)
+        focused.forceActiveFocus()
+        if (!focused.activeFocus) throw new Error("Card did not receive keyboard focus")
+        key({key: Qt.Key_P, modifiers: Qt.ControlModifier, accepted: false})
+        if (qaPinnedId !== focused.modelData.id) throw new Error("Ctrl+P must pin the focused card")
+        search.forceActiveFocus()
+
+        entries = entries.slice(0, 3)
+        selectedIndex = 2
+        var pinned = entries.map(function(e) { return Object.assign({}, e, {pinnedAt: e.id === "ccc" ? 20 : 0}) })
+        applyState(JSON.stringify({settings: prefs, entries: pinned, directory: directory, captureAllowed: true}))
+        if (filtered[0].id !== "ccc" || selectedIndex !== 0 || selectedEntry.id !== "ccc") throw new Error("Pin must move selected card to front without changing selection")
+        var newer = Object.assign({}, entries[0], {id: "newer", pinnedAt: 0})
+        applyState(JSON.stringify({settings: prefs, entries: [newer].concat(entries), directory: directory, captureAllowed: true}))
+        if (filtered[0].id !== "ccc" || selectedEntry.id !== "ccc") throw new Error("New copies must stay behind pins")
+        var unpinned = entries.map(function(e) { return Object.assign({}, e, {pinnedAt: 0}) })
+        applyState(JSON.stringify({settings: prefs, entries: unpinned, directory: directory, captureAllowed: true}))
+        if (filtered[0].id !== "newer" || selectedEntry.id !== "ccc") throw new Error("Unpin must restore recency and keep selected ID")
+    }
+    function qaSettings() {
+        var previous = [query, typeFilter, favoritesOnly].join("|")
+        settingsOpen = true
+        content.children[0].ensurePolished()
+        if (search.visible || paletteFlow.visible || filterFlow.visible || historyActions.visible || cards.visible)
+            throw new Error("History controls must be hidden in Settings")
+        if (!settingsHeader.visible || !settingsView.visible || !backToHistory.visible)
+            throw new Error("Settings needs its own heading and Back control")
+        if (Math.abs(surface.y - (panel.height - surface.height) / 2) > 1)
+            throw new Error("Settings must stay centered")
+        if (settingsView.height < Style.space(80)) throw new Error("Settings content is clipped")
+        search.focus = false
+        backToHistory.forceActiveFocus()
+        var deletes = qaDeleteDispatches
+        key({key: Qt.Key_Delete, modifiers: Qt.NoModifier, accepted: false})
+        if (qaDeleteDispatches !== deletes) throw new Error("Delete in Settings must not delete a hidden history entry")
+        key({key: Qt.Key_Escape, modifiers: Qt.NoModifier, accepted: false})
+        content.children[0].ensurePolished()
+        if (settingsOpen || !historyHeader.visible || !historyActions.visible || !cards.visible)
+            throw new Error("Escape must return to history")
+        if ([query, typeFilter, favoritesOnly].join("|") !== previous)
+            throw new Error("Settings must preserve search and filters")
     }
     function qaConfirm() { confirm.opened = true }
     function open(payload) {''')
@@ -90,14 +181,14 @@ ShellRoot {
                     pano.qaSize(1100); pano.query = ""; pano.typeFilter = "All"; pano.favoritesOnly = false
                     pano.entries = pano.entries.concat(pano.entries, pano.entries)
                 } else if (step === 18) {
-                    pano.qaCheck(); pano.qaScroll()
+                    pano.qaCheck(); pano.qaScroll(); pano.qaMomentum(); pano.qaPin(); pano.qaSettings()
                     pano.qaSize(390); pano.settingsOpen = true
                 } else if (step === 19) {
-                    pano.settingsOpen = false; pano.qaConfirm()
+                    pano.qaSettings(); pano.qaConfirm()
                 } else if (step === 20) {
                     pano.close()
                     if (pano.opened) throw new Error("Did not close")
-                    console.log("PANO_UI_PASS: 16 layout/setting combinations, bottom strip geometry, horizontal scrolling, keys, filters, settings, confirmation and close")
+                    console.log("PANO_UI_PASS: 16 layout/setting combinations, bottom strip geometry, horizontal scrolling, momentum/reversal/cancellation, pin ordering/selection, keys, filters, dedicated settings view, confirmation and close")
                     Qt.quit()
                 }
                 step++

@@ -41,13 +41,34 @@ Item {
     property bool copyPaste: false
     property string activeScreen: ""
     property int previewGeneration: 0
+    property double lastWheelTime: 0
+    property real wheelVelocity: 0
+    property bool systemMomentum: false
     readonly property var filtered: Model.rows(entries, query, typeFilter, favoritesOnly)
     readonly property var colors: prefs.colors ? Model.palette(entries) : []
     readonly property bool narrow: panel.width < Style.space(720)
     readonly property bool horizontal: prefs.horizontal && !narrow
     readonly property var selectedEntry: selectedIndex >= 0 && selectedIndex < filtered.length ? filtered[selectedIndex] : null
 
+    component CardActionButton: Button {
+        focusable: true
+        horizontalPadding: Style.space(2)
+        color: "transparent"
+        borderSpec: Border.none()
+        foreground: hot || activeFocus || selected ? Color.accent : Color.menu.text
+        Rectangle {
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: Style.space(2)
+            width: Math.max(0, parent.width - Style.space(4))
+            height: Math.max(1, Style.normalBorderWidth)
+            color: Color.accent
+            visible: parent.activeFocus
+        }
+    }
+
     function open(payload) {
+        stopScrolling()
         activeScreen = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : ""
         var screens = Quickshell.screens
         var target = screens.length ? screens[0] : null
@@ -59,6 +80,7 @@ Item {
         Qt.callLater(function() { search.forceActiveFocus() })
     }
     function close() {
+        stopScrolling()
         var wasOpened = opened
         opened = false
         previewGeneration++
@@ -85,11 +107,14 @@ Item {
             var value = JSON.parse(text)
             if (value.error) { errorText = value.error; return }
             if (!value.settings || !Array.isArray(value.entries)) return
+            var selectedId = selectedEntry ? selectedEntry.id : ""
             if (!value.settings.previews) root.previewGeneration++
             prefs = value.settings; entries = value.entries; directory = value.directory
             captureAllowed = value.captureAllowed === true
             ready = true; errorText = captureAllowed ? "" : "Recording disabled: disable omarchy.clipboard before enabling Pano."
-            selectedIndex = Math.max(0, Math.min(selectedIndex, filtered.length - 1))
+            var preserved = filtered.findIndex(function(entry) { return entry.id === selectedId })
+            selectedIndex = preserved >= 0 ? preserved : Math.max(0, Math.min(selectedIndex, filtered.length - 1))
+            Qt.callLater(function() { if (root.opened) cards.positionViewAtIndex(root.selectedIndex, ListView.Contain) })
             // A result for a removed entry must never reappear after an async request.
             var keep = ({})
             for (var i = 0; i < entries.length; i++) if (titles[entries[i].id]) keep[entries[i].id] = titles[entries[i].id]
@@ -106,6 +131,7 @@ Item {
         enqueue("settings", JSON.stringify(patch))
     }
     function select(delta) {
+        stopScrolling()
         if (!filtered.length) return
         selectedIndex = (selectedIndex + delta + filtered.length) % filtered.length
         cards.positionViewAtIndex(selectedIndex, ListView.Contain)
@@ -113,8 +139,53 @@ Item {
     function scrollCards(delta) {
         cards.contentX = Math.max(0, Math.min(Math.max(0, cards.contentWidth - cards.width), cards.contentX + delta))
     }
+    function stopScrolling() {
+        wheelIdle.stop()
+        cards.cancelFlick()
+        lastWheelTime = 0
+        wheelVelocity = 0
+        systemMomentum = false
+    }
+    function finishScroll() {
+        wheelIdle.stop()
+        var recent = Date.now() - lastWheelTime <= 120
+        var velocity = wheelVelocity
+        var coast = !systemMomentum && recent && Math.abs(velocity) >= Style.space(120)
+        lastWheelTime = 0
+        wheelVelocity = 0
+        systemMomentum = false
+        if (coast && opened && horizontal && !settingsOpen) cards.flick(velocity, 0)
+    }
+    function wheelCards(event) {
+        event.accepted = true
+        if (event.phase === Qt.ScrollBegin) stopScrolling()
+        if (event.phase === Qt.ScrollEnd) { finishScroll(); return }
+        var pixel = Math.abs(event.pixelDelta.x) >= Math.abs(event.pixelDelta.y) ? event.pixelDelta.x : event.pixelDelta.y
+        var angle = Math.abs(event.angleDelta.x) >= Math.abs(event.angleDelta.y) ? event.angleDelta.x : event.angleDelta.y
+        var touchpad = pixel !== 0 || event.phase !== Qt.NoScrollPhase || (event.device && event.device.type === PointerDevice.TouchPad)
+        if (!touchpad) {
+            stopScrolling()
+            scrollCards(-angle / 120 * Style.space(160))
+            return
+        }
+        if (event.phase === Qt.ScrollMomentum) systemMomentum = true
+        var delta = -(pixel || angle / 120 * Style.space(160)) * 1.7
+        if (!delta) return
+        cards.cancelFlick()
+        scrollCards(delta)
+        var now = Date.now()
+        var elapsed = lastWheelTime ? now - lastWheelTime : 16
+        var velocity = -delta * 1000 / Math.max(8, Math.min(80, elapsed))
+        if (lastWheelTime && elapsed < 80 && velocity * wheelVelocity > 0)
+            velocity = wheelVelocity * 0.6 + velocity * 0.4
+        wheelVelocity = Math.max(-cards.maximumFlickVelocity, Math.min(cards.maximumFlickVelocity, velocity))
+        lastWheelTime = now
+        // Some Wayland touchpads omit ScrollEnd; idle also releases the gesture.
+        wheelIdle.restart()
+    }
     function copy(entry, keepOpen) {
         if (!entry || copier.running || copyTimer.running) return
+        stopScrolling()
         copyId = entry.id; copyPaste = prefs.paste && !keepOpen
         if (!keepOpen) close()
         copyTimer.restart()
@@ -126,17 +197,29 @@ Item {
         else if (!settingsOpen && (event.key === Qt.Key_Up || event.key === Qt.Key_Left && (!search.activeFocus || !root.query))) { select(-1); event.accepted = true }
         else if (!settingsOpen && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && search.activeFocus) { copy(selectedEntry, false); event.accepted = true }
         else if (event.modifiers & Qt.ControlModifier) {
-            if (event.key === Qt.Key_F) { search.forceActiveFocus(); event.accepted = true }
+            if (event.key === Qt.Key_F) { settingsOpen = false; search.forceActiveFocus(); event.accepted = true }
             else if (event.key === Qt.Key_S) { settingsOpen = !settingsOpen; event.accepted = true }
+            else if (settingsOpen) return
             else if (event.key === Qt.Key_B) { favoritesOnly = !favoritesOnly; event.accepted = true }
+            else if (event.key === Qt.Key_P) { if (selectedEntry) enqueue("pin", selectedEntry.id); event.accepted = true }
             else if (event.key === Qt.Key_D) { if (selectedEntry) enqueue("favorite", selectedEntry.id); event.accepted = true }
             else if (event.key >= Qt.Key_1 && event.key <= Qt.Key_8) { typeFilter = Model.types[event.key - Qt.Key_1]; selectedIndex = 0; event.accepted = true }
             else if (event.key === Qt.Key_Delete) { confirm.selectedIndex = 0; confirm.opened = true; event.accepted = true }
-        } else if (event.key === Qt.Key_Delete && !search.activeFocus) { if (selectedEntry) enqueue("delete", selectedEntry.id); event.accepted = true }
+        } else if (event.key === Qt.Key_Delete && !settingsOpen && !search.activeFocus) { if (selectedEntry) enqueue("delete", selectedEntry.id); event.accepted = true }
     }
-    onQueryChanged: selectedIndex = 0
-    onTypeFilterChanged: selectedIndex = 0
-    onFavoritesOnlyChanged: selectedIndex = 0
+    onQueryChanged: { stopScrolling(); selectedIndex = 0 }
+    onTypeFilterChanged: { stopScrolling(); selectedIndex = 0 }
+    onFavoritesOnlyChanged: { stopScrolling(); selectedIndex = 0 }
+    onFilteredChanged: stopScrolling()
+    onHorizontalChanged: stopScrolling()
+    onSettingsOpenChanged: {
+        stopScrolling()
+        Qt.callLater(function() {
+            if (!root.opened) return
+            if (root.settingsOpen) backToHistory.forceActiveFocus()
+            else search.forceActiveFocus()
+        })
+    }
     onSelectedEntryChanged: previewDelay.restart()
     onOpenedChanged: if (opened) previewDelay.restart()
     Component.onCompleted: if (integrationEnabled) enqueue("init")
@@ -145,6 +228,7 @@ Item {
         preview.running = false
         if (integrationEnabled) Quickshell.execDetached(["python3", helper, "cleanup-session", stateDir, sessionDir])
     }
+    Timer { id: wheelIdle; interval: 80; onTriggered: root.finishScroll() }
     Timer { interval: 30000; running: root.opened; repeat: true; onTriggered: root.clockNow = Date.now() }
     Timer {
         id: copyTimer
@@ -281,7 +365,28 @@ Item {
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: Style.spacing.md
+                    RowLayout {
+                        id: settingsHeader
+                        visible: root.settingsOpen
+                        Layout.fillWidth: true
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Settings"
+                            color: Color.menu.text
+                            font.family: Style.font.menuFamily
+                            font.pixelSize: Style.font.heading
+                        }
+                        Button {
+                            id: backToHistory
+                            text: "Back"
+                            focusable: true
+                            Accessible.name: "Back to clipboard"
+                            onClicked: root.settingsOpen = false
+                        }
+                    }
                     GridLayout {
+                        id: historyHeader
+                        visible: !root.settingsOpen
                         columns: root.narrow ? 1 : 2
                         Layout.fillWidth: true
                         rowSpacing: Style.spacing.sm
@@ -330,7 +435,7 @@ Item {
                         id: filterFlow
                         Layout.fillWidth: true
                         Layout.preferredHeight: childrenRect.height
-                        visible: root.prefs.filters
+                        visible: !root.settingsOpen && root.prefs.filters
                         spacing: Style.space(3)
                         Repeater {
                             model: Model.types
@@ -351,6 +456,8 @@ Item {
                         }
                     }
                     Flow {
+                        id: historyActions
+                        visible: !root.settingsOpen
                         Layout.fillWidth: true
                         Layout.preferredHeight: childrenRect.height
                         spacing: Style.space(3)
@@ -369,6 +476,7 @@ Item {
                         textFormat: Text.PlainText
                     }
                     Flickable {
+                        id: settingsView
                         visible: root.settingsOpen
                         Layout.fillWidth: true; Layout.fillHeight: true
                         contentHeight: settingsColumn.height
@@ -379,6 +487,7 @@ Item {
                             spacing: Style.spacing.sm
                             Repeater {
                                 model: [
+                                    {key: "incognito", label: "Incognito (pause recording)"},
                                     {key: "colors", label: "Recent-color palette"},
                                     {key: "languages", label: "Code-language tags"},
                                     {key: "filters", label: "Quick type-filter buttons"},
@@ -404,7 +513,7 @@ Item {
                             }
                             Text {
                                 width: parent.width
-                                text: "Shortcut: configure Hyprland to run omarchy-shell shell toggle sterling.pano.\nCtrl+1…8: type · Ctrl+B: favorites · Ctrl+D: favorite selection · Ctrl+F: search · Ctrl+S: settings · Ctrl+Delete: clear"
+                                text: "Shortcut: configure Hyprland to run omarchy-shell shell toggle sterling.pano.\nCtrl+1…8: type · Ctrl+B: favorites · Ctrl+D: favorite · Ctrl+P: pin · Ctrl+F: search · Ctrl+S: settings · Ctrl+Delete: clear"
                                 wrapMode: Text.Wrap; color: Color.menu.text
                                 textFormat: Text.PlainText
                                 font.family: Style.font.menuFamily; font.pixelSize: Style.font.caption
@@ -421,15 +530,17 @@ Item {
                         spacing: Style.spacing.md
                         boundsBehavior: Flickable.StopAtBounds
                         cacheBuffer: 0
+                        maximumFlickVelocity: Style.space(2400)
+                        flickDeceleration: Style.space(5200)
+                        onDraggingChanged: if (dragging) root.stopScrolling()
                         currentIndex: root.selectedIndex
-                        WheelHandler {
+                        MouseArea {
+                            parent: cards
+                            anchors.fill: parent
+                            z: 1
                             enabled: root.horizontal
-                            onWheel: function(event) {
-                                var pixels = event.pixelDelta.x || event.pixelDelta.y
-                                var delta = pixels || (event.angleDelta.x || event.angleDelta.y) / 120 * Style.space(160)
-                                root.scrollCards(-delta)
-                                event.accepted = true
-                            }
+                            acceptedButtons: Qt.NoButton
+                            onWheel: function(event) { root.wheelCards(event) }
                         }
                         delegate: BorderSurface {
                             id: card
@@ -442,6 +553,7 @@ Item {
                             borderSpec: Border.controlSpec(activeFocus ? "focus" : selected || hover.hovered ? "hover-cursor" : "normal", Color.menu.text, Color.accent)
                             radius: Style.cornerRadius
                             activeFocusOnTab: true
+                            onActiveFocusChanged: if (activeFocus) { root.stopScrolling(); root.selectedIndex = index }
                             Accessible.role: Accessible.Button
                             Accessible.name: modelData.kind + ": " + modelData.preview.slice(0, 160)
                             Accessible.onPressAction: root.copy(modelData, false)
@@ -492,17 +604,27 @@ Item {
                                                 font.family: Style.font.menuFamily; font.pixelSize: Style.font.caption
                                                 elide: Text.ElideRight
                                             }
+                                            Text {
+                                                visible: root.prefs.languages && card.modelData.kind === "code"
+                                                Layout.fillWidth: true
+                                                text: card.modelData.language || "Code"
+                                                color: Color.accent
+                                                font.family: Style.font.menuFamily; font.pixelSize: Style.font.caption
+                                                elide: Text.ElideRight; textFormat: Text.PlainText
+                                            }
                                         }
-                                        Text {
-                                            visible: root.prefs.languages && card.modelData.kind === "code"
-                                            Layout.maximumWidth: Style.space(60)
-                                            text: card.modelData.language || "Code"
-                                            color: Color.accent
-                                            font.family: Style.font.menuFamily; font.pixelSize: Style.font.caption
-                                            elide: Text.ElideRight; textFormat: Text.PlainText
+                                        CardActionButton {
+                                            text: selected ? "󰐃" : "󰤱"
+                                            selected: !!card.modelData.pinnedAt
+                                            tooltipText: selected ? "Unpin card" : "Pin card to front"
+                                            Accessible.name: tooltipText
+                                            Accessible.role: Accessible.Button
+                                            Accessible.checkable: true
+                                            Accessible.checked: selected
+                                            onClicked: root.enqueue("pin", card.modelData.id)
                                         }
-                                        Button { text: card.modelData.favorite ? "★" : "☆"; focusable: true; horizontalPadding: Style.space(2); Accessible.name: card.modelData.favorite ? "Unfavorite entry" : "Favorite entry"; onClicked: root.enqueue("favorite", card.modelData.id) }
-                                        Button { text: "×"; focusable: true; horizontalPadding: Style.space(2); Accessible.name: "Delete entry"; onClicked: root.enqueue("delete", card.modelData.id) }
+                                        CardActionButton { text: card.modelData.favorite ? "★" : "☆"; Accessible.name: card.modelData.favorite ? "Unfavorite entry" : "Favorite entry"; onClicked: root.enqueue("favorite", card.modelData.id) }
+                                        CardActionButton { text: "×"; Accessible.name: "Delete entry"; onClicked: root.enqueue("delete", card.modelData.id) }
                                     }
                                 }
                                 Item {
@@ -551,7 +673,7 @@ Item {
                     id: confirm
                     anchors.fill: parent
                     z: 50
-                    message: "Delete all history, including saved history and favorites?"
+                    message: "Delete all history, including saved history, pinned cards and favorites?"
                     confirmText: "Delete"
                     Keys.priority: Keys.BeforeItem
                     Keys.onPressed: function(event) { root.key(event) }

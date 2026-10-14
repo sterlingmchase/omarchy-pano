@@ -3,7 +3,7 @@
 A horizontal clipboard manager for Omarchy, inspired by
 [Pano for GNOME](https://github.com/sterlingmchase/gnome-shell-pano).
 Browse compact preview cards in a bottom-of-screen strip, search your history,
-and keep useful clips as favorites—all using Omarchy's native theme and controls.
+pin important clips to the front, and keep favorites—all using Omarchy's native theme and controls.
 
 ![Pano's horizontal card strip with synthetic clipboard entries](docs/screenshot.png)
 
@@ -12,7 +12,7 @@ shown enabled; they default to off.*
 
 - Text, code, colors, links, images, emoji and supported file references.
 - Horizontal scrolling, keyboard selection and a narrow-screen list layout.
-- Persistent history, deduplication, favorites and configurable retention.
+- Persistent history, deduplication, front-pinned cards, favorites and configurable retention.
 - Optional color palette, language labels and type-filter buttons.
 - Incognito, session-only history and optional background link-title previews.
 
@@ -28,10 +28,15 @@ Read the format limitations before relying on file-cut operations.
 
 ## Interface
 
-Compact cards show type, relative copy time, preview, favorite, and delete.
+Compact cards show type, relative copy time, preview, pin, favorite, and delete.
 Wide displays use a shallow, nearly full-width horizontal card strip at the bottom
 of the screen, inspired by the Pano reference. Narrow displays use a vertical list.
-Scroll the strip with a mouse wheel, horizontal trackpad gesture, or drag.
+Scroll the strip with a mouse wheel, a horizontal or vertical touchpad gesture,
+or drag. Touchpad scrolling has a 1.7× sensitivity boost and a short,
+speed-dependent glide after release (capped at roughly 0.46 seconds). New scrolling,
+keyboard selection, search/filter changes, Settings, dragging or closing stop the
+glide. Existing system momentum is respected without adding another glide;
+ordinary mouse-wheel steps remain direct.
 Left/Right select cards while search is empty; Up/Down also select cards.
 Disable horizontal cards in Settings to use the vertical list everywhere.
 Images are decoded asynchronously at a capped thumbnail size. Text is always
@@ -42,7 +47,9 @@ Search combines with the type filter and Favorites. The selected type remains
 active if its optional buttons are hidden; Ctrl+1 resets it to All. Up/Down
 select entries; Enter in search copies the selection. Tab reaches cards,
 swatches, filters, settings, and actions. Enter/Space activates a focused button
-or card. Escape closes, or first leaves Settings. Clicking outside closes.
+or card. Settings opens as a centered page with its own heading and Back button;
+search, the color palette, filters and history actions are hidden there. Back or
+Escape returns to the history view and restores search focus. Clicking outside closes.
 Closing unmaps the layer surface to release keyboard focus to the compositor.
 
 | Shortcut | Action |
@@ -51,15 +58,31 @@ Closing unmaps the layer surface to release keyboard focus to the compositor.
 | Ctrl+1…8 | All, Code, Text, Color, Image, Link, File, Emoji |
 | Ctrl+B | Toggle Favorites filter |
 | Ctrl+D | Favorite/unfavorite selected entry |
+| Ctrl+P | Pin/unpin selected entry at the front |
 | Ctrl+S | Open/close Settings |
 | Delete (outside search) | Delete selected entry |
-| Ctrl+Delete | Confirm clearing all saved and session history, including favorites |
+| Ctrl+Delete | Confirm clearing all saved and session history, including pinned cards and favorites |
 
 The clear dialog opens on **Cancel** and traps keyboard confirmation.
 Selecting normally copies only. Optional automatic paste closes the overlay,
 waits for focus release, then uses the installed `wtype` Shift+Insert mechanism,
 as the native Omarchy clipboard helpers do. This is not universally accepted by
 all applications; keep it off when exact focus/paste behavior matters.
+
+## Pin cards to the front
+
+Click the pin icon in a card header, or select a card and press **Ctrl+P**.
+The pin is outlined when unpinned and filled/accented when pinned. Card actions change icon color on hover without
+background boxes; an underline marks keyboard focus. Pinned cards stay before ordinary history,
+even when new items arrive or an existing item is copied again. If you pin
+several cards, the most recently pinned appears first. Unpinning restores the
+card's normal position by copy time.
+
+Pinning is separate from the star/Favorites filter. Pins still respect search,
+type filters and the Favorites filter, and they do not count toward the ordinary
+retention limit. Pins persist with saved history; session-only pins follow the
+same temporary lifetime as other session entries. You can explicitly delete a
+pinned card. Clear-history also removes pins and says so in its confirmation.
 
 ## Settings and privacy
 
@@ -72,7 +95,7 @@ The settings file is watched, so external edits also take effect. Its keys are:
 | `colors` | false | Up to ten recent colors derived from current history; copies original text and stays open |
 | `languages` | false | Small language labels on code cards; detection remains available for the Code filter |
 | `filters` | false | Wrapping type **buttons** below search; no dropdown |
-| `retention` | 300 | Ordinary entries to keep, clamped to 0–5000; favorites do not count |
+| `retention` | 300 | Ordinary entries to keep, clamped to 0–5000; favorites and pins do not count |
 | `previews` | false | Download titles for selected links in the background |
 | `incognito` | false | Stop the watcher and reject in-flight captures at storage time |
 | `sessionOnly` | false | Use private runtime history instead of persistent history |
@@ -108,7 +131,8 @@ Payloads preserve exact selected-MIME bytes, including whitespace, trailing
 newlines, invalid UTF-8, image bytes and GNOME file `copy`/`cut` records.
 Preview decoding never modifies the stored payload. Deduplication uses MIME plus
 a SHA-256 of those bytes; repeating a favorite moves it newest and retains its
-favorite flag. Different MIME representations remain distinct entries.
+favorite flag. Recopying a pinned card also preserves its pin position. Different
+MIME representations remain distinct entries.
 
 Supported formats: plain text/UTF8_STRING/STRING, PNG/JPEG/WebP/GIF/BMP/TIFF,
 `text/uri-list` containing local file references, and
@@ -140,8 +164,8 @@ have an eight-second outer deadline. Only the first 8192 decoded characters are
 searched/classified/rendered, and language analysis is capped to that prefix.
 Search does not match text beyond it. Metadata is loaded for the retained
 history; ListView constructs only visible cards and thumbnails. Very large
-favorite collections increase metadata memory usage because favorites are
-never automatically trimmed.
+favorite or pinned collections increase metadata memory usage because protected
+entries are never automatically trimmed.
 
 Colors support CSS hex RGB/RGBA, rgb()/rgba(), hsl()/hsla(), and `transparent`.
 Named CSS colors and newer CSS color spaces are not currently detected.
@@ -228,24 +252,31 @@ omarchy plugin validate .
 python -m unittest discover -s tests -v
 node tests/model.test.js
 python tests/ui_smoke.py
+python tests/wheel_smoke.py
 /usr/lib/qt6/bin/qmlformat Pano.qml >/dev/null
 ```
 
 - **Native validator:** the installed Omarchy manifest validator checks schema,
   ID, entry point, and absence of symlinks. QML parser checks syntax.
 - **Storage/classification tests:** synthetic bytes test exact payloads,
-  ordering, favorites, retention, clearing both stores, malformed history,
+  ordering, pin persistence, favorites, retention, clearing both stores, malformed history,
   settings, session teardown, concurrent operations, bounded reads and hints.
   Clipboard copying, snapshots, and network responses are **mocked**, never
   the user's clipboard or public internet.
 - **UI layout tests:** actual installed Omarchy controls and model run under
   Quickshell in a temporary tree. The Wayland PanelWindow is replaced with an
   offscreen Qt Window; all desktop I/O is disabled. Explicit layout polishing
-  exercises 16 wide/narrow optional-setting combinations, combined filters,
+  exercises 16 wide/narrow optional-setting combinations, momentum initiation,
+  reversal/cancellation, system-momentum handling, mouse-wheel behavior, combined filters,
   settings, confirmation and close recursion. This is a **mocked host** test,
   not native compositor testing or screenshot-based visual QA. Expected socket
   warnings reflect sandbox restrictions. The harness copies installed UI
   modules into a temporary directory; it does not edit them.
+- **Wheel event tests:** Qt's installed `qmltestrunner` dispatches horizontal,
+  vertical and diagonal wheel events through the shipped input receiver in an
+  offscreen host. Checks one delivery per event, card click-through and native
+  scrolling in narrow layouts. The UI suite also checks Ctrl+P targets the
+  keyboard-focused card. These checks do not measure physical touchpad feel.
 
 ### Remaining native checks
 
