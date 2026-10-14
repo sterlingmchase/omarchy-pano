@@ -5,7 +5,9 @@ function rows(entries, query, type, favorites) {
   return entries.filter(function(e) {
     return (!favorites || e.favorite) && (type === 'All' || e.kind === type.toLowerCase()) &&
       (!needle || (e.searchText || (e.preview + ' ' + (e.language || '')).toLowerCase()).indexOf(needle) >= 0)
-  })
+  }).map(function(entry, index) { return {entry: entry, index: index} })
+    .sort(function(a, b) { return (b.entry.pinnedAt || 0) - (a.entry.pinnedAt || 0) || a.index - b.index })
+    .map(function(row) { return row.entry })
 }
 function palette(entries) {
   return entries.filter(function(e) { return e.kind === 'color' && e.rgba && e.rgba.length === 4 }).slice(0, 10)

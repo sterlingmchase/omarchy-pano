@@ -18,3 +18,12 @@ console.log('model checks passed')
 
 assert.ok(M.typeIcon('code'))
 assert.notEqual(M.typeIcon('image'), M.typeIcon('text'))
+
+const pinned = entries.map(e => ({...e, pinnedAt: e.id === 'b' ? 20 : e.id === 'c' ? 10 : 0}))
+assert.deepEqual(M.rows(pinned, '', 'All', false).map(e => e.id), ['b', 'c', 'a'])
+const withNewCopy = [{id: 'new', kind: 'text', preview: 'latest', favorite: false}, ...pinned]
+assert.deepEqual(M.rows(withNewCopy, '', 'All', false).map(e => e.id), ['b', 'c', 'new', 'a'])
+assert.deepEqual(M.rows(pinned, '', 'All', true).map(e => e.id), ['c', 'a'])
+assert.deepEqual(M.rows(pinned, 'print', 'Code', false).map(e => e.id), ['a'])
+assert.deepEqual(M.rows(pinned.map(e => ({...e, pinnedAt: e.id === 'b' ? 0 : e.pinnedAt})), '', 'All', false).map(e => e.id), ['c', 'a', 'b'])
+assert.deepEqual(pinned.map(e => e.id), ['a', 'b', 'c'])

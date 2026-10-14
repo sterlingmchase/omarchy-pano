@@ -201,9 +201,10 @@ class Store:
         ordinary = 0
         kept = []
         for entry in entries:
-            if entry.get('favorite') or ordinary < limit:
+            protected = entry.get('favorite') or entry.get('pinnedAt')
+            if protected or ordinary < limit:
                 kept.append(entry)
-                if not entry.get('favorite'):
+                if not protected:
                     ordinary += 1
         atomic_json(directory / 'history.json', kept)
         ids = {v['id'] for v in kept}
@@ -226,7 +227,7 @@ class Store:
             entries = self.load(directory)
             key = hashlib.sha256(mime.encode() + b'\0' + raw).hexdigest()
             previous = next((e for e in entries if e['id'] == key), {})
-            entry = dict(info, id=key, mime=mime, copiedAt=time.time(), size=len(raw), favorite=previous.get('favorite', False))
+            entry = dict(info, id=key, mime=mime, copiedAt=time.time(), size=len(raw), favorite=previous.get('favorite', False), pinnedAt=previous.get('pinnedAt', 0))
             fd, name = tempfile.mkstemp(dir=directory)
             try:
                 with os.fdopen(fd, 'wb') as stream:
@@ -261,6 +262,10 @@ class Store:
                 for entry in entries:
                     if entry['id'] == argument:
                         entry['favorite'] = not entry.get('favorite', False)
+            elif action == 'pin':
+                for entry in entries:
+                    if entry['id'] == argument:
+                        entry['pinnedAt'] = 0 if entry.get('pinnedAt') else time.time()
             elif action == 'clear':
                 self.save(self.base, [], 0)
                 self.save(self.session, [], 0)

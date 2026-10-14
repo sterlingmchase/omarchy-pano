@@ -63,6 +63,49 @@ class ClipboardTests(unittest.TestCase):
         self.assertEqual(self.entries(), [])
         self.assertFalse(any(len(p.name) == 64 for p in self.base.iterdir()))
 
+    def test_pin_persists_across_recopies_and_protects_retention(self):
+        raw = b'  keep me at the front\n'
+        self.store.capture(raw, 'text/plain')
+        original = self.entries()[0]
+        key = original['id']
+        self.assertFalse(original.get('pinnedAt', 0))
+        self.store.command('pin', key)
+        pinned = self.entries()[0]
+        stamp = pinned['pinnedAt']
+        self.assertGreater(stamp, 0)
+        self.assertEqual(pinned['copiedAt'], original['copiedAt'])
+        self.assertFalse(pinned['favorite'])
+        reloaded = c.Store(self.base, self.session)
+        self.assertEqual(reloaded.command('list')['entries'][0]['pinnedAt'], stamp)
+        self.store.capture(b'newer', 'text/plain')
+        self.store.capture(raw, 'text/plain')
+        self.assertEqual(self.entries()[0]['pinnedAt'], stamp)
+        self.assertEqual((self.base / key).read_bytes(), raw)
+        self.store.command('settings', '{"retention":0}')
+        self.store.capture(b'another newer clip', 'text/plain')
+        self.assertEqual([e['id'] for e in self.entries()], [key])
+        self.store.command('pin', key)
+        self.assertEqual(self.entries(), [])
+        self.assertFalse((self.base / key).exists())
+
+    def test_pin_is_independent_of_favorites_and_can_be_deleted_or_cleared(self):
+        self.store.capture(b'pinned favorite', 'text/plain')
+        key = self.entries()[0]['id']
+        self.store.command('favorite', key)
+        self.store.command('pin', key)
+        self.store.command('pin', key)
+        self.assertTrue(self.entries()[0]['favorite'])
+        self.assertFalse(self.entries()[0]['pinnedAt'])
+        self.store.command('pin', key)
+        self.store.command('delete', key)
+        self.assertFalse((self.base / key).exists())
+        self.store.capture(b'clear the pinned card', 'text/plain')
+        key = self.entries()[0]['id']
+        self.store.command('pin', key)
+        self.store.command('clear')
+        self.assertEqual(self.entries(), [])
+        self.assertFalse((self.base / key).exists())
+
     def test_incognito_sensitive_session_boundaries(self):
         self.store.capture(b'persistent', 'text/plain')
         self.store.command('settings', '{"incognito":true}')
