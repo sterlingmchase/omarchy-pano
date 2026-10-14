@@ -5,7 +5,7 @@ A horizontal clipboard manager for Omarchy, inspired by
 Browse compact preview cards in a bottom-of-screen strip, search your history,
 pin important clips to the front, and keep favorites—all using Omarchy's native theme and controls.
 
-![Pano's horizontal card strip with synthetic clipboard entries](docs/screenshot.png)
+![Pano's horizontal card strip with synthetic clipboard entries](preview.png)
 
 *Screenshot uses synthetic data. Optional type buttons and language labels are
 shown enabled; they default to off.*
@@ -21,7 +21,8 @@ and Pygments 2.21. This is an Omarchy shell plugin, not a GNOME extension or a
 standalone app. It uses Python 3 for short-lived clipboard/file operations;
 Pygments is optional for less common code languages. No new daemon or database.
 
-**Status:** early version. Native display, opening/closing, focus restoration
+**Status:** 0.1.0, initial public release. See the [release notes](CHANGELOG.md)
+and [marketplace release checklist](docs/release.md). Native display, opening/closing, focus restoration
 and a single active clipboard watcher have been checked. Automated tests cover
 storage and UI layout; the remaining native integration checks are listed below.
 Read the format limitations before relying on file-cut operations.
@@ -230,15 +231,31 @@ state; it does not import or rewrite Omarchy's existing history.
 5. Open with **Super+Ctrl+V**, or `omarchy-shell shell toggle sterling.pano`.
    Settings are available from the Settings button or Ctrl+S.
 
-For updates, use `omarchy plugin update sterling.pano`. If an updated layout
+For updates, use `omarchy plugin update sterling.pano`. The installed Omarchy
+version follows the repository default branch, not GitHub release tags; review
+the offered diff before accepting an update. If an updated layout
 still looks unchanged after reload, close the overlay and run
 `omarchy restart shell` to release Quickshell's cached components. This briefly
 restarts the shell's bar and widgets.
 
 ## Rollback
 
-Disable `sterling.pano`, enable `omarchy.clipboard`, and restore your
-previous binding. Do not delete either history directory unless you intend to
+Disable Pano and restore the built-in clipboard:
+
+```sh
+omarchy plugin disable sterling.pano
+omarchy plugin enable omarchy.clipboard
+```
+
+Restore your previous clipboard shortcut in `~/.config/hypr/bindings.lua` and
+validate with `hyprctl reload` and `hyprctl configerrors`. Once the built-in
+clipboard works again, remove the installed plugin if desired:
+
+```sh
+omarchy plugin remove sterling.pano
+```
+
+Do not delete either history directory unless you intend to
 erase it. Remove the Pano plugin directory only after disabling it. Normal
 plugin disable/unload stops managed processes; session files are cleaned on
 orderly teardown. No installed Omarchy or GNOME extension files are modified.

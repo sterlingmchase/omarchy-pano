@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "author": "Sterling Chase",
   "license": "MIT",
-  "description": "Native clipboard cards, search, favorites and optional colors, language tags and type buttons",
+  "description": "Horizontal clipboard cards with search, pins, favorites and optional colors, language tags and type filters",
   "kinds": ["overlay"],
   "keepLoaded": true,
   "entryPoints": {"overlay": "Pano.qml"}
