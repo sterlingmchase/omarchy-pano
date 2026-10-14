@@ -21,8 +21,9 @@ with tempfile.TemporaryDirectory(prefix='pano-ui-') as tmp:
     source = source.replace('    PanelWindow {', '    Window {\n        width: 1100; height: 700; contentItem.width: width; contentItem.height: height')
     source = source.replace('        panel.screen = target', '        // Offscreen mock: no native screen assignment.')
     source = re.sub(r'^        (?:anchors \{ top: true; bottom: true; left: true; right: true \}|exclusionMode:.*|WlrLayershell\..*)\n', '', source, flags=re.M)
-    source = source.replace('    function enqueue(action, argument) {', '    function enqueue(action, argument) {\n        if (action === "delete") qaDeleteDispatches++')
+    source = source.replace('    function enqueue(action, argument) {', '    function enqueue(action, argument) {\n        if (action === "delete") qaDeleteDispatches++; if (action === "pin") qaPinnedId = argument')
     source = source.replace('    function open(payload) {', '''    property int qaDeleteDispatches: 0
+    property string qaPinnedId: ""
     function qaSize(width) { panel.width = width }
     function qaCheck() {
         content.children[0].ensurePolished()
@@ -100,6 +101,15 @@ with tempfile.TemporaryDirectory(prefix='pano-ui-') as tmp:
         query = ""
     }
     function qaPin() {
+        selectedIndex = 0
+        cards.forceLayout()
+        var focused = cards.itemAtIndex(1)
+        focused.forceActiveFocus()
+        if (!focused.activeFocus) throw new Error("Card did not receive keyboard focus")
+        key({key: Qt.Key_P, modifiers: Qt.ControlModifier, accepted: false})
+        if (qaPinnedId !== focused.modelData.id) throw new Error("Ctrl+P must pin the focused card")
+        search.forceActiveFocus()
+
         entries = entries.slice(0, 3)
         selectedIndex = 2
         var pinned = entries.map(function(e) { return Object.assign({}, e, {pinnedAt: e.id === "ccc" ? 20 : 0}) })

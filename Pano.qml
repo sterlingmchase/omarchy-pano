@@ -534,16 +534,12 @@ Item {
                         flickDeceleration: Style.space(5200)
                         onDraggingChanged: if (dragging) root.stopScrolling()
                         currentIndex: root.selectedIndex
-                        WheelHandler {
+                        MouseArea {
+                            parent: cards
+                            anchors.fill: parent
+                            z: 1
                             enabled: root.horizontal
-                            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                            orientation: Qt.Vertical
-                            onWheel: function(event) { root.wheelCards(event) }
-                        }
-                        WheelHandler {
-                            enabled: root.horizontal
-                            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                            orientation: Qt.Horizontal
+                            acceptedButtons: Qt.NoButton
                             onWheel: function(event) { root.wheelCards(event) }
                         }
                         delegate: BorderSurface {
@@ -557,6 +553,7 @@ Item {
                             borderSpec: Border.controlSpec(activeFocus ? "focus" : selected || hover.hovered ? "hover-cursor" : "normal", Color.menu.text, Color.accent)
                             radius: Style.cornerRadius
                             activeFocusOnTab: true
+                            onActiveFocusChanged: if (activeFocus) { root.stopScrolling(); root.selectedIndex = index }
                             Accessible.role: Accessible.Button
                             Accessible.name: modelData.kind + ": " + modelData.preview.slice(0, 160)
                             Accessible.onPressAction: root.copy(modelData, false)

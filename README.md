@@ -252,6 +252,7 @@ omarchy plugin validate .
 python -m unittest discover -s tests -v
 node tests/model.test.js
 python tests/ui_smoke.py
+python tests/wheel_smoke.py
 /usr/lib/qt6/bin/qmlformat Pano.qml >/dev/null
 ```
 
@@ -271,6 +272,11 @@ python tests/ui_smoke.py
   not native compositor testing or screenshot-based visual QA. Expected socket
   warnings reflect sandbox restrictions. The harness copies installed UI
   modules into a temporary directory; it does not edit them.
+- **Wheel event tests:** Qt's installed `qmltestrunner` dispatches horizontal,
+  vertical and diagonal wheel events through the shipped input receiver in an
+  offscreen host. Checks one delivery per event, card click-through and native
+  scrolling in narrow layouts. The UI suite also checks Ctrl+P targets the
+  keyboard-focused card. These checks do not measure physical touchpad feel.
 
 ### Remaining native checks
 
