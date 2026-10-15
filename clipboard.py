@@ -23,7 +23,7 @@ MAX_BYTES = 32 * 1024 * 1024
 PREVIEW_LIMIT = 8192
 DEFAULTS = dict(colors=False, languages=False, filters=False, retention=300,
                 previews=False, incognito=False, sessionOnly=False, paste=False,
-                horizontal=True)
+                horizontal=True, copySound=False, pasteSound=False)
 IMAGE_TYPES = ('image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp', 'image/tiff')
 FILE_TYPE = 'x-special/gnome-copied-files'
 
@@ -236,6 +236,7 @@ class Store:
             finally:
                 Path(name).unlink(missing_ok=True)
             self.save(directory, [entry] + [e for e in entries if e['id'] != key], prefs['retention'])
+            return key
 
     def command(self, action, argument=''):
         with self.locked():
@@ -309,7 +310,7 @@ def snapshot(store, trigger):
     plain = next((v for v in ('text/plain;charset=utf-8', 'text/plain') if v in types), None)
     if plain and bounded_paste(plain) != trigger:
         return
-    store.capture(raw, mime)
+    return store.capture(raw, mime)
 
 
 def bounded_read(stream, limit, timeout=3):
@@ -409,8 +410,8 @@ def main():
             return
         # Drain without retaining arbitrarily large or sensitive input.
         raw = bounded_read(sys.stdin.buffer, MAX_BYTES)
-        snapshot(store, raw)
-        print('{}')
+        if snapshot(store, raw):
+            print(json.dumps({'captured': True}), flush=True)
     elif action == 'copy':
         with store.locked():
             prefs = settings(store.base)
@@ -420,6 +421,7 @@ def main():
                 raise ValueError('Entry was removed')
             with (directory / entry['id']).open('rb') as stream:
                 run(['wl-copy', '--type', entry['mime']], stdin=stream)
+        print(json.dumps({'copied': True}), flush=True)
         if len(args) > 1 and args[1] == 'paste':
             # QML waits until its layer surface is unmapped before invoking this.
             time.sleep(0.15)

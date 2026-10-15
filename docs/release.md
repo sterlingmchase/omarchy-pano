@@ -39,7 +39,8 @@ maintainer approval; local validation does not grant a marketplace listing.
   and one `wl-paste --watch` through `flock`, `setpriv` and `timeout`.
 - Runtime tools: Python 3, wl-clipboard (`wl-paste`/`wl-copy`), util-linux
   (`flock`/`setpriv`) and coreutils (`timeout`). Optional `wtype` supplies
-  automatic paste; optional Pygments expands language detection.
+  automatic paste; optional Pygments expands language detection. Optional
+  PipeWire `pw-play` plays the bundled copy and auto-paste pops when enabled.
 - Stores clipboard payloads and metadata in private user state directories;
   session-only history uses a private runtime directory. Cleanup is confined to
   plugin-owned resources. No root privileges, installers or downloaded code.

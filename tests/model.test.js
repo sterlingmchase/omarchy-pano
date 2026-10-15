@@ -27,3 +27,34 @@ assert.deepEqual(M.rows(pinned, '', 'All', true).map(e => e.id), ['c', 'a'])
 assert.deepEqual(M.rows(pinned, 'print', 'Code', false).map(e => e.id), ['a'])
 assert.deepEqual(M.rows(pinned.map(e => ({...e, pinnedAt: e.id === 'b' ? 0 : e.pinnedAt})), '', 'All', false).map(e => e.id), ['c', 'a', 'b'])
 assert.deepEqual(pinned.map(e => e.id), ['a', 'b', 'c'])
+
+// Stand-in for Qt's ListModel; check edits and identity without rendering cards.
+const data = []
+let moves = 0
+const model = {
+  get count() { return data.length },
+  get(i) { return data[i] },
+  remove(i) { data.splice(i, 1) },
+  insert(i, value) { data.splice(i, 0, value) },
+  setProperty(i, name, value) { data[i][name] = value },
+  move(from, to, count) { moves++; data.splice(to, 0, ...data.splice(from, count)) }
+}
+M.sync(model, entries)
+const identities = data.slice()
+M.sync(model, [pinned[2], pinned[0], pinned[1]])
+assert.equal(moves, 1)
+assert.equal(data[0], identities[2])
+assert.deepEqual(data.map(row => row.entry.id), ['c', 'a', 'b'])
+assert.equal(data[0].entry.pinnedAt, 10)
+M.sync(model, [entries[0], {id: 'new', kind: 'text'}, entries[2]])
+assert.deepEqual(data.map(row => row.entry.id), ['a', 'new', 'c'])
+assert.equal(data[0], identities[0])
+M.sync(model, [])
+assert.equal(data.length, 0)
+const large = Array.from({length: 5000}, (_, i) => ({id: String(i)}))
+M.sync(model, large)
+moves = 0
+M.sync(model, [large[4999], ...large.slice(0, -1)])
+assert.equal(moves, 1)
+assert.equal(data[0].entry.id, '4999')
+assert.equal(data.length, 5000)
