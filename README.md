@@ -38,6 +38,35 @@ speed-dependent glide after release (capped at roughly 0.46 seconds). New scroll
 keyboard selection, search/filter changes, Settings, dragging or closing stop the
 glide. Existing system momentum is respected without adding another glide;
 ordinary mouse-wheel steps remain direct.
+Reaching either end gives a small elastic card nudge and a brief theme-accent
+edge glow confined to the card height. The visual pull is capped at 32 scaled
+pixels and settles in 300 ms;
+the history position stays within its normal bounds. Short histories and the
+vertical layout do not show the effect.
+Cards ease into position when pinned or reordered. Deletion fades the removed
+card and slides its neighbors together. Pin and star icons give a small pop
+when their state changes. Hover uses a subtle theme-color change with fixed card geometry.
+Color swatches briefly show a checkmark only after copying succeeds; the
+palette stays open and continues to copy the original color text.
+Enable **Copy sound (soft pop)** in Settings for a short pop whenever the existing
+watcher accepts a clipboard copy, including Ctrl+C and Copy menu actions in
+other apps. It defaults to off and follows live setting changes. Uses the
+existing PipeWire `pw-play` tool;
+unavailable or muted audio does not prevent copying. Rapid copies do not stack
+overlapping sounds. Pano selections use the same watcher feedback to avoid a
+double pop; when recording is paused, explicit Pano selections can still pop.
+Incognito, sensitive hints, unsupported formats and rejected/failed snapshots
+do not produce background sounds. This observes supported clipboard changes,
+not global key presses: Ctrl+C that does not update the clipboard stays silent.
+
+Enable **Auto-paste sound** separately for a short typewriter-style key tap after the
+automatic paste shortcut succeeds. It also defaults to off. With both sounds
+enabled, copying and pasting have separate feedback; a failed paste
+still keeps the successful copy pop but does not play the paste sound. Paste
+feedback confirms `wtype` sent Shift+Insert; applications do not acknowledge
+whether they accepted it. Swatches copy only and never make a paste sound.
+Each sound toggle has a **▶ preview button on its left**. Previews work even with the toggle
+off and never change it or touch the clipboard.
 Left/Right select cards while search is empty; Up/Down also select cards.
 Disable horizontal cards in Settings to use the vertical list everywhere.
 Images are decoded asynchronously at a capped thumbnail size. Text is always
@@ -101,6 +130,8 @@ The settings file is watched, so external edits also take effect. Its keys are:
 | `incognito` | false | Stop the watcher and reject in-flight captures at storage time |
 | `sessionOnly` | false | Use private runtime history instead of persistent history |
 | `paste` | false | Automatically paste after selection; color-palette clicks still copy only |
+| `copySound` | false | Soft pop on accepted clipboard copies from any app, plus Pano selections; requires `pw-play` |
+| `pasteSound` | false | Typewriter-style key tap after the optional auto-paste shortcut succeeds; independent of copy sound |
 | `horizontal` | true | Horizontal cards when enough screen width is available |
 
 Session-only history starts empty. Switching modes clears the temporary history;
@@ -194,8 +225,9 @@ state; it does not import or rewrite Omarchy's existing history.
 
 1. Review the source and verify the tested Omarchy/Quickshell versions above.
    Required tools are `python3`, `wl-paste`, `wl-copy`, `flock`, `setpriv` and
-   `timeout`; automatic paste also needs `wtype`. The reference Omarchy system
-   already provides these. Do not upgrade your desktop solely to try this plugin.
+   `timeout`; automatic paste also needs `wtype`, and optional copy sound needs
+   PipeWire's `pw-play`. The reference Omarchy system already provides these.
+   Do not upgrade your desktop solely to try this plugin.
 2. Install without enabling it yet:
 
    ```sh
@@ -285,6 +317,10 @@ python tests/wheel_smoke.py
   offscreen Qt Window; all desktop I/O is disabled. Explicit layout polishing
   exercises 16 wide/narrow optional-setting combinations, momentum initiation,
   reversal/cancellation, system-momentum handling, mouse-wheel behavior, combined filters,
+  bounded elastic edge feedback, glow visibility, animation settling and edge hits during momentum,
+  stable card identity, pin/star animation, deletion input safety and successful/failed swatch-copy feedback,
+  copy/paste sound ordering, success/failure, independent live toggles and overlap prevention with mocked audio,
+  external capture feedback, duplicate-pop prevention, and sound previews with disabled toggles in wide/narrow settings,
   settings, confirmation and close recursion. This is a **mocked host** test,
   not native compositor testing or screenshot-based visual QA. Expected socket
   warnings reflect sandbox restrictions. The harness copies installed UI
@@ -331,5 +367,9 @@ ConfirmDialog, Color and Style components. Those runtime components retain
 their upstream licenses.
 
 This plugin's original source is [MIT licensed](LICENSE).
+The copy sound is adapted from [Sharp Pop by CreatorsHome on Pixabay](https://pixabay.com/sound-effects/film-special-effects-sharp-pop-328170/)
+under the Pixabay Content License; it is not MIT licensed. The paste sound is
+an original, procedurally synthesized 140 ms typewriter-style key tap covered by MIT. See
+[sound asset attribution and licenses](assets/NOTICE.md) for details.
 wl-clipboard behavior was checked against its installed manual and
 [upstream wl-paste source](https://github.com/bugaevc/wl-clipboard/blob/master/src/wl-paste.c).

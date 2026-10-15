@@ -123,7 +123,7 @@ class ClipboardTests(unittest.TestCase):
 
     def test_optional_defaults_and_independent_settings(self):
         initial = self.store.command('init')['settings']
-        for key in ('colors', 'languages', 'filters', 'previews', 'paste'):
+        for key in ('colors', 'languages', 'filters', 'previews', 'paste', 'copySound', 'pasteSound'):
             self.assertFalse(initial[key])
         for key in ('colors', 'languages', 'filters'):
             self.store.command('settings', json.dumps({key: True}))
@@ -131,6 +131,15 @@ class ClipboardTests(unittest.TestCase):
         self.assertTrue(all(self.store.command('list')['settings'][key] for key in ('colors', 'languages', 'filters')))
         with self.assertRaises(ValueError):
             self.store.command('settings', '{"retention":"bad"}')
+        self.store.command('settings', '{"copySound":true}')
+        self.assertTrue(c.settings(self.base)['copySound'])
+        self.store.command('settings', '{"copySound":false}')
+        self.assertFalse(c.settings(self.base)['copySound'])
+        with self.assertRaises(ValueError):
+            self.store.command('settings', '{"copySound":"true"}')
+        self.store.command('settings', '{"pasteSound":true}')
+        self.assertTrue(c.settings(self.base)['pasteSound'])
+        self.assertFalse(c.settings(self.base)['copySound'])
 
     def test_malformed_history_is_never_overwritten(self):
         (self.base / 'history.json').write_text('private corrupt history')
@@ -144,6 +153,21 @@ class ClipboardTests(unittest.TestCase):
         before = path.stat().st_mtime_ns
         self.store.command('list')
         self.assertEqual(path.stat().st_mtime_ns, before)
+
+    def test_capture_notification_only_after_success(self):
+        argv = ['clipboard.py', 'capture', str(self.base), str(self.session)]
+        for captured, expected in [('a' * 64, '{"captured": true}\n'), (None, '')]:
+            output = io.StringIO()
+            with patch.object(c, 'capture_allowed', return_value=True), patch.object(c, 'bounded_read', return_value=b'synthetic'), patch.object(c, 'snapshot', return_value=captured), patch.object(c.sys, 'stdout', output), patch.object(c.sys, 'argv', argv), patch.dict(os.environ, {'CLIPBOARD_STATE': 'data'}):
+                c.main()
+            self.assertEqual(output.getvalue(), expected)
+        self.assertIsNone(self.store.capture(b'secret', 'text/plain', sensitive=True))
+        self.assertIsNone(self.store.capture(b'unsupported', 'application/octet-stream'))
+        key = self.store.capture(b'repeated copy', 'text/plain')
+        self.assertEqual(key, self.entries()[0]['id'])
+        self.assertEqual(key, self.store.capture(b'repeated copy', 'text/plain'))
+        self.store.command('settings', '{"incognito":true}')
+        self.assertIsNone(self.store.capture(b'private', 'text/plain'))
 
     def test_colors_alpha_and_invalid(self):
         for value, expected in [('#f008', [1, 0, 0, 136/255]),
@@ -186,9 +210,30 @@ class ClipboardTests(unittest.TestCase):
         commands = []
         def fake_run(args, **kwargs):
             commands.append((args, kwargs['stdin'].read()))
-        with patch.object(c, 'run', fake_run), patch.object(c.sys, 'argv', ['clipboard.py', 'copy', str(self.base), str(self.session), entry['id']]):
+        output = io.StringIO()
+        with patch.object(c, 'run', fake_run), patch.object(c.sys, 'stdout', output), patch.object(c.sys, 'argv', ['clipboard.py', 'copy', str(self.base), str(self.session), entry['id']]):
             c.main()
         self.assertEqual(commands, [(['wl-copy', '--type', c.FILE_TYPE], raw)])
+        self.assertEqual(json.loads(output.getvalue()), {'copied': True})
+
+    def test_copy_confirmation_precedes_paste_and_survives_paste_failure(self):
+        self.store.capture(b'synthetic sound test', 'text/plain')
+        entry = self.entries()[0]
+        output = io.StringIO()
+        def fake_run(args, **kwargs):
+            if args[0] == 'wtype':
+                self.assertEqual(json.loads(output.getvalue()), {'copied': True})
+                raise c.subprocess.CalledProcessError(1, args)
+        argv = ['clipboard.py', 'copy', str(self.base), str(self.session), entry['id'], 'paste']
+        with patch.object(c, 'run', fake_run), patch.object(c.time, 'sleep'), patch.object(c.sys, 'stdout', output), patch.object(c.sys, 'argv', argv):
+            with self.assertRaises(c.subprocess.CalledProcessError):
+                c.main()
+        self.assertEqual(json.loads(output.getvalue()), {'copied': True})
+        output = io.StringIO()
+        with patch.object(c, 'run', side_effect=c.subprocess.CalledProcessError(1, ['wl-copy'])), patch.object(c.sys, 'stdout', output), patch.object(c.sys, 'argv', argv):
+            with self.assertRaises(c.subprocess.CalledProcessError):
+                c.main()
+        self.assertEqual(output.getvalue(), '')
 
     def test_preview_private_redirects_size_and_no_persistence(self):
         for url in ('file:///etc/passwd', 'http://user:pass@example.com/', 'http://127.0.0.1/'):

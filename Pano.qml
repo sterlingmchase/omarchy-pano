@@ -27,7 +27,7 @@ Item {
     property string errorText: ""
     property var entries: []
     property var prefs: ({colors: false, languages: false, filters: false, previews: false,
-        retention: 300, incognito: false, sessionOnly: false, paste: false, horizontal: true})
+        retention: 300, incognito: false, sessionOnly: false, paste: false, horizontal: true, copySound: false, pasteSound: false})
     property string query: ""
     property string typeFilter: "All"
     property bool favoritesOnly: false
@@ -44,6 +44,8 @@ Item {
     property double lastWheelTime: 0
     property real wheelVelocity: 0
     property bool systemMomentum: false
+    property real edgePull: 0
+    property string copiedColorId: ""
     readonly property var filtered: Model.rows(entries, query, typeFilter, favoritesOnly)
     readonly property var colors: prefs.colors ? Model.palette(entries) : []
     readonly property bool narrow: panel.width < Style.space(720)
@@ -51,6 +53,16 @@ Item {
     readonly property var selectedEntry: selectedIndex >= 0 && selectedIndex < filtered.length ? filtered[selectedIndex] : null
 
     component CardActionButton: Button {
+        id: actionButton
+        property bool feedbackReady: false
+        Component.onCompleted: feedbackReady = true
+        onSelectedChanged: if (feedbackReady && root.opened) togglePop.restart()
+        SequentialAnimation {
+            id: togglePop
+            objectName: "togglePop"
+            NumberAnimation { target: actionButton; property: "scale"; to: 1.18; duration: 70; easing.type: Easing.OutCubic }
+            NumberAnimation { target: actionButton; property: "scale"; to: 1; duration: 120; easing.type: Easing.OutCubic }
+        }
         focusable: true
         horizontalPadding: Style.space(2)
         color: "transparent"
@@ -81,6 +93,7 @@ Item {
     }
     function close() {
         stopScrolling()
+        copiedHint.stop(); copiedColorId = ""
         var wasOpened = opened
         opened = false
         previewGeneration++
@@ -110,6 +123,8 @@ Item {
             var selectedId = selectedEntry ? selectedEntry.id : ""
             if (!value.settings.previews) root.previewGeneration++
             prefs = value.settings; entries = value.entries; directory = value.directory
+            if (!prefs.copySound) copySound.running = false
+            if (!prefs.pasteSound) pasteSound.running = false
             captureAllowed = value.captureAllowed === true
             ready = true; errorText = captureAllowed ? "" : "Recording disabled: disable omarchy.clipboard before enabling Pano."
             var preserved = filtered.findIndex(function(entry) { return entry.id === selectedId })
@@ -137,11 +152,23 @@ Item {
         cards.positionViewAtIndex(selectedIndex, ListView.Contain)
     }
     function scrollCards(delta) {
-        cards.contentX = Math.max(0, Math.min(Math.max(0, cards.contentWidth - cards.width), cards.contentX + delta))
+        var target = cards.contentX + delta
+        var bounded = Math.max(0, Math.min(Math.max(0, cards.contentWidth - cards.width), target))
+        cards.contentX = bounded
+        if (target !== bounded) edgeFeedback(bounded - target)
+        else { edgeReturn.stop(); edgePull = 0 }
+    }
+    function edgeFeedback(distance) {
+        if (!opened || !horizontal || settingsOpen || cards.contentWidth <= cards.width) return
+        edgeReturn.stop()
+        edgePull = (distance < 0 ? -1 : 1) * Math.min(Style.space(32), Math.max(Style.space(5), Math.abs(distance) * 0.32))
+        edgeReturn.restart()
     }
     function stopScrolling() {
         wheelIdle.stop()
         cards.cancelFlick()
+        edgeReturn.stop()
+        edgePull = 0
         lastWheelTime = 0
         wheelVelocity = 0
         systemMomentum = false
@@ -190,6 +217,32 @@ Item {
         if (!keepOpen) close()
         copyTimer.restart()
     }
+    function confirmCopy() {
+        // The watcher supplies one pop for normal copies, including our own.
+        if (!watcher.running) playSound("copy", false)
+        if (!opened || !colors.some(function(entry) { return entry.id === copyId })) return
+        copiedColorId = copyId
+        copiedHint.restart()
+    }
+    function copyEvent(data) {
+        try {
+            var event = JSON.parse(data)
+            if (event.copied === true) confirmCopy()
+            if (event.error) { errorText = "Could not copy this entry."; if (!opened) open("") }
+        } catch (e) { /* A malformed helper message must not report success. */ }
+    }
+    function playSound(kind, preview) {
+        if (!preview && !prefs[kind + "Sound"]) return
+        var player = kind === "copy" ? copySound : pasteSound
+        if (integrationEnabled && !player.running) player.running = true
+    }
+    function clipboardEvent(data) {
+        try {
+            if (JSON.parse(data).captured !== true) return
+            playSound("copy", false)
+            enqueue("list")
+        } catch (e) { /* Unsupported or failed captures must stay silent. */ }
+    }
     function key(event) {
         if (confirm.opened) { event.accepted = confirm.handleKey(event); return }
         if (event.key === Qt.Key_Escape) { if (settingsOpen) settingsOpen = false; else close(); event.accepted = true }
@@ -210,7 +263,7 @@ Item {
     onQueryChanged: { stopScrolling(); selectedIndex = 0 }
     onTypeFilterChanged: { stopScrolling(); selectedIndex = 0 }
     onFavoritesOnlyChanged: { stopScrolling(); selectedIndex = 0 }
-    onFilteredChanged: stopScrolling()
+    onFilteredChanged: { stopScrolling(); Model.sync(displayModel, filtered) }
     onHorizontalChanged: stopScrolling()
     onSettingsOpenChanged: {
         stopScrolling()
@@ -229,6 +282,13 @@ Item {
         if (integrationEnabled) Quickshell.execDetached(["python3", helper, "cleanup-session", stateDir, sessionDir])
     }
     Timer { id: wheelIdle; interval: 80; onTriggered: root.finishScroll() }
+    Timer { id: copiedHint; interval: 1000; onTriggered: root.copiedColorId = "" }
+    ListModel { id: displayModel; dynamicRoles: true }
+    NumberAnimation {
+        id: edgeReturn
+        target: root; property: "edgePull"; to: 0
+        duration: 300; easing.type: Easing.OutCubic
+    }
     Timer { interval: 30000; running: root.opened; repeat: true; onTriggered: root.clockNow = Date.now() }
     Timer {
         id: copyTimer
@@ -248,17 +308,23 @@ Item {
         }
     }
     Process {
+        id: copySound
+        command: ["timeout", "2s", "pw-play", "--media-role", "Notification", "--latency", "25ms", "--volume", "1.0", decodeURIComponent(Qt.resolvedUrl("assets/copy-pop.wav").toString().replace(/^file:\/\//, ""))]
+        stdout: StdioCollector {}
+        stderr: StdioCollector {}
+    }
+    Process {
+        id: pasteSound
+        command: ["timeout", "2s", "pw-play", "--media-role", "Notification", "--latency", "25ms", "--volume", "1.0", decodeURIComponent(Qt.resolvedUrl("assets/paste-pop.wav").toString().replace(/^file:\/\//, ""))]
+        stdout: StdioCollector {}
+        stderr: StdioCollector {}
+    }
+    Process {
         id: copier
-        stdout: StdioCollector {
-            onStreamFinished: {
-                if (text.indexOf('"error"') >= 0) {
-                    root.errorText = "Could not copy this entry."
-                    if (!root.opened) root.open("")
-                }
-            }
-        }
+        stdout: SplitParser { onRead: function(data) { root.copyEvent(data) } }
         onExited: function(code) {
             if (code !== 0) { root.errorText = "Copy or automatic paste failed."; if (!root.opened) root.open("") }
+            else if (root.copyPaste) root.playSound("paste", false)
         }
     }
     // The native plugin must be disabled before activation. A file lock also
@@ -267,7 +333,7 @@ Item {
         id: watcher
         running: root.integrationEnabled && root.ready && root.captureAllowed && !root.prefs.incognito && !restartWatch.running
         command: ["flock", "--nonblock", "--no-fork", root.stateDir + "/watcher.lock", "setpriv", "--pdeathsig", "TERM", "wl-paste", "--watch", "timeout", "8s", "python3", root.helper, "capture", root.stateDir, root.sessionDir]
-        stdout: SplitParser { onRead: function(data) { root.enqueue("list") } }
+        stdout: SplitParser { onRead: function(data) { root.clipboardEvent(data) } }
         onExited: {
             if (root.ready && !root.prefs.incognito) {
                 root.errorText = "Clipboard watcher stopped; retrying. Check that the built-in clipboard plugin is disabled."
@@ -349,7 +415,10 @@ Item {
             anchors.horizontalCenter: parent.horizontalCenter
             y: root.horizontal && !root.settingsOpen ? parent.height - height - Style.gapsOut : (parent.height - height) / 2
             width: root.horizontal && !root.settingsOpen ? panel.width - Style.space(24) : Math.min(Style.space(1080), panel.width - Style.space(24))
-            height: Math.min(Style.space(root.horizontal && !root.settingsOpen ? (root.prefs.filters ? 390 : 350) : 620), panel.height - Style.space(24))
+            height: Math.min(
+                Style.space(root.horizontal && !root.settingsOpen ? (root.prefs.filters ? 390 : 350) : 620),
+                panel.height - Style.space(24),
+                root.horizontal && !root.settingsOpen ? historyLayout.implicitHeight + 2 * Style.spacing.panelPadding : Infinity)
             color: Color.menu.background
             radius: Style.cornerRadius
             padding: Style.spacing.panelPadding
@@ -363,6 +432,7 @@ Item {
                 Keys.priority: Keys.AfterItem
                 Keys.onPressed: function(event) { root.key(event) }
                 ColumnLayout {
+                    id: historyLayout
                     anchors.fill: parent
                     spacing: Style.spacing.md
                     RowLayout {
@@ -405,9 +475,10 @@ Item {
                                 Button {
                                     id: swatch
                                     required property var modelData
+                                    readonly property bool confirmed: root.copiedColorId === modelData.id
                                     width: Style.space(26); height: Style.space(26)
                                     focusable: true
-                                    tooltipText: "Copy color " + modelData.preview
+                                    tooltipText: (confirmed ? "Copied color " : "Copy color ") + modelData.preview
                                     Accessible.role: Accessible.Button
                                     Accessible.name: tooltipText
                                     onClicked: root.copy(modelData, true)
@@ -417,6 +488,12 @@ Item {
                                         Rectangle { width: parent.width / 2; height: parent.height / 2; color: Color.menu.background }
                                         Rectangle { x: parent.width / 2; y: parent.height / 2; width: parent.width / 2; height: parent.height / 2; color: Color.menu.background }
                                         Rectangle { anchors.fill: parent; color: Qt.rgba(swatch.modelData.rgba[0], swatch.modelData.rgba[1], swatch.modelData.rgba[2], swatch.modelData.rgba[3]) }
+                                    }
+                                    Rectangle {
+                                        anchors.fill: parent; anchors.margins: Style.space(3)
+                                        visible: swatch.confirmed
+                                        color: Color.menu.background
+                                        Text { anchors.centerIn: parent; text: "✓"; color: Color.accent; font.family: Style.font.menuFamily; font.pixelSize: Style.font.body }
                                     }
                                 }
                             }
@@ -494,15 +571,31 @@ Item {
                                     {key: "previews", label: "Download link titles (contacts copied sites)"},
                                     {key: "sessionOnly", label: "Session-only history"},
                                     {key: "paste", label: "Automatically paste after selection"},
+                                    {key: "copySound", label: "Copy sound (soft pop)"},
+                                    {key: "pasteSound", label: "Auto-paste sound"},
                                     {key: "horizontal", label: "Horizontal cards on wide screens"}
                                 ]
-                                Toggle {
+                                RowLayout {
                                     required property var modelData
                                     width: parent.width
-                                    label: modelData.label
-                                    checked: !!root.prefs[modelData.key]
-                                    Accessible.name: label
-                                    onClicked: root.setting(modelData.key, !checked)
+                                    spacing: Style.spacing.sm
+                                    Button {
+                                        objectName: modelData.key + "Preview"
+                                        visible: modelData.key === "copySound" || modelData.key === "pasteSound"
+                                        text: "▶"
+                                        focusable: true
+                                        tooltipText: modelData.key === "copySound" ? "Preview copy sound" : "Preview auto-paste sound"
+                                        Accessible.name: tooltipText
+                                        onClicked: root.playSound(modelData.key === "copySound" ? "copy" : "paste", true)
+                                    }
+                                    Toggle {
+                                        objectName: modelData.key + "Toggle"
+                                        Layout.fillWidth: true
+                                        label: modelData.label
+                                        checked: !!root.prefs[modelData.key]
+                                        Accessible.name: label
+                                        onClicked: root.setting(modelData.key, !checked)
+                                    }
                                 }
                             }
                             NumberField {
@@ -524,15 +617,39 @@ Item {
                         id: cards
                         visible: !root.settingsOpen
                         Layout.fillWidth: true; Layout.fillHeight: true
+                        Layout.preferredHeight: root.horizontal ? Style.space(230) : -1
                         clip: true
-                        model: root.filtered
+                        model: displayModel
+                        add: Transition { enabled: root.opened; NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 120 } }
+                        remove: Transition { enabled: root.opened; NumberAnimation { property: "opacity"; to: 0; duration: 120 } }
+                        move: Transition { enabled: root.opened; NumberAnimation { properties: "x,y"; duration: 180; easing.type: Easing.OutCubic } }
+                        displaced: Transition { enabled: root.opened; NumberAnimation { properties: "x,y"; duration: 180; easing.type: Easing.OutCubic } }
                         orientation: root.horizontal ? ListView.Horizontal : ListView.Vertical
+                        readonly property real cardHeight: Math.min(height, Style.space(230))
                         spacing: Style.spacing.md
                         boundsBehavior: Flickable.StopAtBounds
                         cacheBuffer: 0
                         maximumFlickVelocity: Style.space(2400)
                         flickDeceleration: Style.space(5200)
                         onDraggingChanged: if (dragging) root.stopScrolling()
+                        onAtXBeginningChanged: if (atXBeginning && moving) root.edgeFeedback(Style.space(60))
+                        onAtXEndChanged: if (atXEnd && moving) root.edgeFeedback(-Style.space(60))
+                        contentItem.transform: Translate { x: root.edgePull }
+                        Rectangle {
+                            id: edgeGlow
+                            parent: cards
+                            z: 2
+                            x: root.edgePull >= 0 ? 0 : cards.width - width
+                            width: Style.space(52); height: cards.cardHeight
+                            visible: root.horizontal && root.edgePull !== 0
+                            opacity: Math.min(0.65, Math.abs(root.edgePull) / Style.space(32) * 0.65)
+                            rotation: root.edgePull >= 0 ? 0 : 180
+                            gradient: Gradient {
+                                orientation: Gradient.Horizontal
+                                GradientStop { position: 0; color: Color.accent }
+                                GradientStop { position: 1; color: "transparent" }
+                            }
+                        }
                         currentIndex: root.selectedIndex
                         MouseArea {
                             parent: cards
@@ -544,14 +661,17 @@ Item {
                         }
                         delegate: BorderSurface {
                             id: card
-                            required property var modelData
+                            required property var entry
+                            readonly property var modelData: entry
                             required property int index
                             readonly property bool selected: index === root.selectedIndex
                             width: root.horizontal ? Math.min(cards.width, Style.space(220)) : cards.width
-                            height: root.horizontal ? Math.min(cards.height, Style.space(230)) : Style.space(180)
-                            color: selected ? Color.menu.selectedBackground : Style.normalFillFor(Color.menu.text, Color.accent)
+                            height: root.horizontal ? cards.cardHeight : Style.space(180)
+                            color: selected ? Color.menu.selectedBackground : hover.hovered ? Style.hoverFillFor(Color.menu.text, Color.accent) : Style.normalFillFor(Color.menu.text, Color.accent)
                             borderSpec: Border.controlSpec(activeFocus ? "focus" : selected || hover.hovered ? "hover-cursor" : "normal", Color.menu.text, Color.accent)
                             radius: Style.cornerRadius
+                            Behavior on color { ColorAnimation { duration: 110 } }
+                            ListView.onRemove: enabled = false
                             activeFocusOnTab: true
                             onActiveFocusChanged: if (activeFocus) { root.stopScrolling(); root.selectedIndex = index }
                             Accessible.role: Accessible.Button
@@ -614,6 +734,7 @@ Item {
                                             }
                                         }
                                         CardActionButton {
+                                            objectName: "pinAction"
                                             text: selected ? "󰐃" : "󰤱"
                                             selected: !!card.modelData.pinnedAt
                                             tooltipText: selected ? "Unpin card" : "Pin card to front"
@@ -623,7 +744,7 @@ Item {
                                             Accessible.checked: selected
                                             onClicked: root.enqueue("pin", card.modelData.id)
                                         }
-                                        CardActionButton { text: card.modelData.favorite ? "★" : "☆"; Accessible.name: card.modelData.favorite ? "Unfavorite entry" : "Favorite entry"; onClicked: root.enqueue("favorite", card.modelData.id) }
+                                        CardActionButton { objectName: "favoriteAction"; selected: !!card.modelData.favorite; text: selected ? "★" : "☆"; Accessible.name: selected ? "Unfavorite entry" : "Favorite entry"; onClicked: root.enqueue("favorite", card.modelData.id) }
                                         CardActionButton { text: "×"; Accessible.name: "Delete entry"; onClicked: root.enqueue("delete", card.modelData.id) }
                                     }
                                 }

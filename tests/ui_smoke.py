@@ -21,9 +21,18 @@ with tempfile.TemporaryDirectory(prefix='pano-ui-') as tmp:
     source = source.replace('    PanelWindow {', '    Window {\n        width: 1100; height: 700; contentItem.width: width; contentItem.height: height')
     source = source.replace('        panel.screen = target', '        // Offscreen mock: no native screen assignment.')
     source = re.sub(r'^        (?:anchors \{ top: true; bottom: true; left: true; right: true \}|exclusionMode:.*|WlrLayershell\..*)\n', '', source, flags=re.M)
+    # Mock only audio dispatch; keep the preference, success and overlap gates.
+    source = re.sub(r'    Process \{\n        id: copySound\n.*?\n    \}\n(?=    Process \{\n        id: copier)',
+                    '    QtObject { id: copySound; property bool running: false; onRunningChanged: if (running) root.qaSoundRequests++ }\n'
+                    '    QtObject { id: pasteSound; property bool running: false; onRunningChanged: if (running) root.qaPasteRequests++ }\n', source, flags=re.S)
+    source = source.replace('integrationEnabled && !player.running', '!player.running')
+    source = source.replace('if (!watcher.running) playSound', 'if (!qaWatcherRunning) playSound')
     source = source.replace('    function enqueue(action, argument) {', '    function enqueue(action, argument) {\n        if (action === "delete") qaDeleteDispatches++; if (action === "pin") qaPinnedId = argument')
     source = source.replace('    function open(payload) {', '''    property int qaDeleteDispatches: 0
     property string qaPinnedId: ""
+    property int qaSoundRequests: 0
+    property int qaPasteRequests: 0
+    property bool qaWatcherRunning: false
     function qaSize(width) { panel.width = width }
     function qaCheck() {
         content.children[0].ensurePolished()
@@ -38,10 +47,13 @@ with tempfile.TemporaryDirectory(prefix='pano-ui-') as tmp:
         if (cards.count !== filtered.length) throw new Error("List projection")
         var item = cards.itemAtIndex(0)
         if (item && item.width > cards.width) throw new Error("Card overflow")
+        if (item && item.scale !== 1) throw new Error("Card hover must preserve border size")
         if (horizontal) {
             if (surface.height > Style.space(400)) throw new Error("Strip is too tall: " + surface.height + ", panel: " + panel.width + "x" + panel.height + ", settings: " + settingsOpen)
             if (Math.abs(surface.y + surface.height - panel.height + Style.gapsOut) > 1) throw new Error("Strip must be at bottom")
             if (item && item.height > item.width * 1.35) throw new Error("Cards must be compact, not columns")
+            if (item && edgeGlow.height !== item.height) throw new Error("Edge glow must match card height")
+            if (item && cards.height - item.height > 1) throw new Error("Unused space below horizontal cards")
         }
     }
     function qaScroll() {
@@ -59,6 +71,52 @@ with tempfile.TemporaryDirectory(prefix='pano-ui-') as tmp:
     }
     function qaWheel(delta, phase, pixels) {
         wheelCards({pixelDelta: Qt.point(pixels ? delta : 0, 0), angleDelta: Qt.point(pixels ? 0 : delta, 0), phase: phase, device: null, accepted: false})
+    }
+    function qaEdges() {
+        stopScrolling()
+        cards.contentX = 0
+        scrollCards(-1000)
+        if (edgePull <= Style.space(24) || edgePull > Style.space(32) || !edgeGlow.visible || cards.contentX !== 0)
+            throw new Error("Beginning must show bounded elastic feedback")
+        if (cards.contentItem.transform[0].x !== edgePull || edgeGlow.opacity < 0.4)
+            throw new Error("Elastic feedback must translate cards and light the edge")
+        cards.contentX = cards.contentWidth - cards.width
+        scrollCards(1000)
+        if (edgePull >= 0 || Math.abs(edgePull) > Style.space(32))
+            throw new Error("End feedback must pull in the opposite direction")
+        scrollCards(-20)
+        if (edgePull !== 0 || edgeReturn.running) throw new Error("Reversal must clear feedback")
+        cards.contentX = 0
+        scrollCards(-20)
+    }
+    function qaEdgeReset() {
+        if (Math.abs(edgePull) > 0.1 || edgeReturn.running) throw new Error("Edge feedback must settle")
+        scrollCards(-20)
+        settingsOpen = true
+        if (edgePull !== 0 || edgeReturn.running) throw new Error("Settings must clear edge feedback")
+        settingsOpen = false
+        var saved = entries
+        entries = entries.slice(0, 1)
+        cards.forceLayout()
+        scrollCards(-100)
+        if (edgePull !== 0) throw new Error("Short histories must not bounce")
+        entries = saved
+        prefs = Object.assign({}, prefs, {horizontal: false})
+        cards.forceLayout()
+        edgeFeedback(20)
+        if (edgePull !== 0) throw new Error("Vertical layout must not bounce horizontally")
+        prefs = Object.assign({}, prefs, {horizontal: true})
+        cards.forceLayout()
+        cards.contentX = cards.contentWidth - cards.width - 2
+        cards.flick(-1000, 0)
+    }
+    function qaEdgeSettled() { return !edgeReturn.running && Math.abs(edgePull) < 0.1 }
+    function qaEdgeCoast() {
+        if (!cards.atXEnd || edgePull >= 0 || !edgeGlow.visible)
+            throw new Error("Native momentum reaching the end must light the edge")
+        stopScrolling()
+        if (edgePull !== 0 || edgeReturn.running) throw new Error("Stopping must clear edge feedback")
+        cards.contentX = 0
     }
     function qaMomentum() {
         stopScrolling()
@@ -111,10 +169,15 @@ with tempfile.TemporaryDirectory(prefix='pano-ui-') as tmp:
         search.forceActiveFocus()
 
         entries = entries.slice(0, 3)
+        cards.forceLayout()
+        var movedCard = cards.itemAtIndex(2)
         selectedIndex = 2
         var pinned = entries.map(function(e) { return Object.assign({}, e, {pinnedAt: e.id === "ccc" ? 20 : 0}) })
         applyState(JSON.stringify({settings: prefs, entries: pinned, directory: directory, captureAllowed: true}))
         if (filtered[0].id !== "ccc" || selectedIndex !== 0 || selectedEntry.id !== "ccc") throw new Error("Pin must move selected card to front without changing selection")
+        cards.forceLayout()
+        if (cards.itemAtIndex(0) !== movedCard) throw new Error("Pin must move the existing card instead of rebuilding it")
+        if (!qaFind(qaFind(movedCard, "pinAction"), "togglePop").running) throw new Error("Pin update must animate its icon")
         var newer = Object.assign({}, entries[0], {id: "newer", pinnedAt: 0})
         applyState(JSON.stringify({settings: prefs, entries: [newer].concat(entries), directory: directory, captureAllowed: true}))
         if (filtered[0].id !== "ccc" || selectedEntry.id !== "ccc") throw new Error("New copies must stay behind pins")
@@ -133,6 +196,28 @@ with tempfile.TemporaryDirectory(prefix='pano-ui-') as tmp:
         if (Math.abs(surface.y - (panel.height - surface.height) / 2) > 1)
             throw new Error("Settings must stay centered")
         if (settingsView.height < Style.space(80)) throw new Error("Settings content is clipped")
+        var copyPreview = qaFind(settingsColumn, "copySoundPreview")
+        var pastePreview = qaFind(settingsColumn, "pasteSoundPreview")
+        if (!copyPreview || !pastePreview || !copyPreview.visible || !pastePreview.visible)
+            throw new Error("Both sound settings need preview buttons")
+        var copyToggle = qaFind(settingsColumn, "copySoundToggle")
+        var pasteToggle = qaFind(settingsColumn, "pasteSoundToggle")
+        if (copyPreview.x + copyPreview.width > copyToggle.x || pastePreview.x + pastePreview.width > pasteToggle.x)
+            throw new Error("Sound preview buttons must be left of their toggles")
+        var previousPrefs = prefs
+        prefs = Object.assign({}, prefs, {copySound: false, pasteSound: false})
+        var unchanged = JSON.stringify(prefs)
+        copySound.running = false
+        pasteSound.running = false
+        copyPreview.clicked()
+        pastePreview.clicked()
+        if (!copySound.running || !pasteSound.running || JSON.stringify(prefs) !== unchanged)
+            throw new Error("Preview buttons must play while disabled without changing toggles")
+        if (copyPreview.mapToItem(settingsColumn, 0, 0).x + copyPreview.width > settingsColumn.width + 1)
+            throw new Error("Sound preview control overflows narrow settings")
+        copySound.running = false
+        pasteSound.running = false
+        prefs = previousPrefs
         search.focus = false
         backToHistory.forceActiveFocus()
         var deletes = qaDeleteDispatches
@@ -145,6 +230,154 @@ with tempfile.TemporaryDirectory(prefix='pano-ui-') as tmp:
         if ([query, typeFilter, favoritesOnly].join("|") !== previous)
             throw new Error("Settings must preserve search and filters")
     }
+    function qaFind(item, name) {
+        if (item.objectName === name) return item
+        var children = item.data || []
+        for (var i = 0; i < children.length; i++) {
+            var found = qaFind(children[i], name)
+            if (found) return found
+        }
+        return null
+    }
+    property var qaToggleButton: null
+    function qaFeedback() {
+        cards.forceLayout()
+        var first = cards.itemAtIndex(0)
+        qaToggleButton = qaFind(first, "favoriteAction")
+        if (!qaToggleButton) throw new Error("Favorite action not found")
+        var firstId = first.modelData.id
+        entries = entries.map(function(entry) { return entry.id === firstId ? Object.assign({}, entry, {favorite: !entry.favorite}) : entry })
+        if (!qaFind(qaToggleButton, "togglePop").running) throw new Error("Favorite update must animate its icon")
+        if (!cards.move || !cards.displaced || !cards.remove || !cards.add) throw new Error("Missing native list transitions")
+        copyId = colors[0].id
+        copier.exited(1, 0)
+        if (copiedColorId || copiedHint.running) throw new Error("Failed copy must not confirm success")
+        errorText = ""
+        copyEvent('{"copied":true}')
+        copier.exited(0, 0)
+        if (!opened || copiedColorId !== copyId || !copiedHint.running) throw new Error("Successful swatch copy must confirm and stay open")
+    }
+    function qaFeedbackSettled() { return !copiedHint.running }
+    function qaSound() {
+        var previous = prefs
+        prefs = Object.assign({}, prefs, {copySound: false})
+        copyId = "synthetic-non-color-entry"
+        copyEvent('{"copied":true}')
+        if (qaSoundRequests !== 0) throw new Error("Disabled sound must stay silent")
+        prefs = Object.assign({}, prefs, {copySound: true})
+        copier.exited(1, 0)
+        if (qaSoundRequests !== 0) throw new Error("Failed copy must stay silent")
+        opened = false
+        copyEvent("malformed helper message")
+        if (qaSoundRequests !== 0) throw new Error("Malformed messages must stay silent")
+        copyEvent('{"copied":true}')
+        if (qaSoundRequests !== 1) throw new Error("Successful non-color copy must pop after the overlay closes")
+        copyEvent('{"copied":true}')
+        if (qaSoundRequests !== 1) throw new Error("Copy sounds must not overlap")
+        copySound.running = false
+        copyEvent('{"copied":true}')
+        if (qaSoundRequests !== 2) throw new Error("Later copies must be able to pop again")
+        copySound.running = false
+        prefs = Object.assign({}, prefs, {copySound: false})
+        copyEvent('{"copied":true}')
+        if (qaSoundRequests !== 2) throw new Error("Live sound disable must apply immediately")
+        prefs = Object.assign({}, prefs, {pasteSound: true})
+        copyPaste = false
+        copier.exited(0, 0)
+        if (qaPasteRequests !== 0) throw new Error("Copy-only selections must not make a paste sound")
+        copyPaste = true
+        copier.exited(1, 0)
+        if (qaPasteRequests !== 0) throw new Error("Failed auto-paste must stay silent")
+        copier.exited(0, 0)
+        if (qaPasteRequests !== 1) throw new Error("Successful auto-paste must play its own sound")
+        copier.exited(0, 0)
+        if (qaPasteRequests !== 1) throw new Error("Paste sounds must not overlap")
+        pasteSound.running = false
+        prefs = Object.assign({}, prefs, {pasteSound: false, copySound: true})
+        copyEvent('{"copied":true}')
+        copier.exited(0, 0)
+        if (qaPasteRequests !== 1 || qaSoundRequests !== 3) throw new Error("Copy and paste sound settings must be independent")
+        copySound.running = false
+        prefs = Object.assign({}, prefs, {pasteSound: true})
+        copyEvent('{"copied":true}')
+        if (qaSoundRequests !== 4 || qaPasteRequests !== 1) throw new Error("Copy confirmation must precede paste feedback")
+        copier.exited(0, 0)
+        if (qaPasteRequests !== 2) throw new Error("Both sounds must play for successful copy then paste")
+        copySound.running = false
+        pasteSound.running = false
+        copyPaste = false
+        prefs = previous
+        opened = true
+        errorText = ""
+    }
+    function qaFeedbackDone() {
+        if (copiedColorId || Math.abs(qaToggleButton.scale - 1) > 0.001) throw new Error("Copy feedback and icon scale must settle")
+        cards.forceLayout()
+        var removed = cards.itemAtIndex(1)
+        var id = removed.modelData.id
+        entries = entries.filter(function(entry) { return entry.id !== id })
+        cards.forceLayout()
+        if (displayModel.count !== filtered.length || removed.enabled) throw new Error("Removed cards must leave the model and stop accepting input while fading")
+    }
+    function qaGlobalSound() {
+        var previous = prefs
+        var before = qaSoundRequests
+        prefs = Object.assign({}, prefs, {copySound: true})
+        qaWatcherRunning = true
+        opened = false
+        copySound.running = false
+        copyEvent('{"copied":true}')
+        if (qaSoundRequests !== before) throw new Error("Pano selections must wait for the watcher to avoid double pops")
+        clipboardEvent('{"captured":true}')
+        if (qaSoundRequests !== before + 1) throw new Error("External clipboard captures must pop while Pano is closed")
+        copyEvent('{"copied":true}')
+        if (qaSoundRequests !== before + 1) throw new Error("Watcher plus own-copy confirmation must not double pop")
+        copySound.running = false
+        clipboardEvent("invalid")
+        clipboardEvent('{"error":"synthetic failure"}')
+        clipboardEvent('{}')
+        if (qaSoundRequests !== before + 1) throw new Error("Unsupported or failed captures must stay silent")
+        clipboardEvent('{"captured":true}')
+        if (qaSoundRequests !== before + 2) throw new Error("Repeated clipboard copies must pop again")
+        copySound.running = false
+        prefs = Object.assign({}, prefs, {copySound: false, pasteSound: false})
+        clipboardEvent('{"captured":true}')
+        if (qaSoundRequests !== before + 2) throw new Error("Disabled global copy sound must stay silent")
+        var saved = JSON.stringify(prefs)
+        playSound("copy", true)
+        playSound("paste", true)
+        if (qaSoundRequests !== before + 3 || !pasteSound.running || JSON.stringify(prefs) !== saved)
+            throw new Error("Sound previews must work with both toggles off without changing settings")
+        copySound.running = false
+        pasteSound.running = false
+        prefs = previous
+        qaWatcherRunning = false
+        opened = true
+    }
+    property int qaStreamCopies: 0
+    property int qaStreamPastes: 0
+    property var qaStreamPrefs: null
+    function qaProcessSound() {
+        qaStreamPrefs = prefs
+        prefs = Object.assign({}, prefs, {copySound: true, pasteSound: true})
+        copySound.running = false
+        pasteSound.running = false
+        qaStreamCopies = qaSoundRequests
+        qaStreamPastes = qaPasteRequests
+        copyPaste = true
+        opened = false
+        copier.command = ["python3", "-c", "import json,time;print(json.dumps(dict(copied=True)),flush=True);time.sleep(.2)"]
+        copier.running = true
+    }
+    function qaProcessSoundDone() {
+        if (copier.running || qaSoundRequests !== qaStreamCopies + 1 || qaPasteRequests !== qaStreamPastes + 1)
+            throw new Error("Real process stdout must trigger copy feedback before successful paste exit")
+        copyPaste = false
+        copySound.running = false
+        pasteSound.running = false
+        prefs = qaStreamPrefs
+        opened = true
+    }
     function qaConfirm() { confirm.opened = true }
     function open(payload) {''')
     (stage / 'Pano.qml').write_text(source)
@@ -156,6 +389,8 @@ ShellRoot {
     Plugin.Pano { id: pano; integrationEnabled: false; shell: mockShell }
     QtObject { id: mockShell; function hide(id) { pano.close() } }
     property int step: -1
+    property int edgeWaits: 0
+    property int feedbackWaits: 0
     Timer {
         interval: 120; running: true; repeat: true
         onTriggered: {
@@ -179,16 +414,24 @@ ShellRoot {
                     if (pano.filtered.length !== 1) throw new Error("Combined filters")
                 } else if (step === 17) {
                     pano.qaSize(1100); pano.query = ""; pano.typeFilter = "All"; pano.favoritesOnly = false
-                    pano.entries = pano.entries.concat(pano.entries, pano.entries)
+                    pano.entries = pano.entries.concat(pano.entries, pano.entries).map(function(entry, index) { return index < 3 ? entry : Object.assign({}, entry, {id: entry.id + index}) })
                 } else if (step === 18) {
-                    pano.qaCheck(); pano.qaScroll(); pano.qaMomentum(); pano.qaPin(); pano.qaSettings()
+                    pano.qaCheck(); pano.qaScroll(); pano.qaMomentum(); pano.qaEdges()
+                } else if (step === 21) {
+                    if (!pano.qaEdgeSettled() && edgeWaits++ < 10) return
+                    pano.qaEdgeReset()
+                } else if (step === 22) {
+                    pano.qaEdgeCoast(); pano.qaPin(); pano.qaFeedback(); pano.qaSound(); pano.qaProcessSound()
+                } else if (step === 23) {
+                    if (!pano.qaFeedbackSettled() && feedbackWaits++ < 15) return
+                    pano.qaProcessSoundDone(); pano.qaFeedbackDone(); pano.qaGlobalSound(); pano.qaSettings()
                     pano.qaSize(390); pano.settingsOpen = true
-                } else if (step === 19) {
+                } else if (step === 24) {
                     pano.qaSettings(); pano.qaConfirm()
-                } else if (step === 20) {
+                } else if (step === 25) {
                     pano.close()
                     if (pano.opened) throw new Error("Did not close")
-                    console.log("PANO_UI_PASS: 16 layout/setting combinations, bottom strip geometry, horizontal scrolling, momentum/reversal/cancellation, pin ordering/selection, keys, filters, dedicated settings view, confirmation and close")
+                    console.log("PANO_UI_PASS: 16 layout/setting combinations, scrolling and elastic edges, persistent card identity/transitions, pin/star feedback, successful/failed copy confirmation, deletion input safety, keys, filters, settings, confirmation and close")
                     Qt.quit()
                 }
                 step++

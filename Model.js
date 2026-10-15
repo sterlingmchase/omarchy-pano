@@ -1,5 +1,23 @@
 // UI projection only: stable payload IDs keep a live search from copying a new row.
 var types = ['All', 'Code', 'Text', 'Color', 'Image', 'Link', 'File', 'Emoji']
+function sync(model, entries) {
+  var wanted = new Set(entries.map(function(e) { return e.id }))
+  for (var i = model.count - 1; i >= 0; i--)
+    if (!wanted.has(model.get(i).entry.id)) model.remove(i)
+  for (var target = 0; target < entries.length; target++) {
+    var entry = entries[target]
+    if (target < model.count && model.get(target).entry.id === entry.id) {
+      model.setProperty(target, 'entry', entry)
+      continue
+    }
+    var from = target + 1
+    while (from < model.count && model.get(from).entry.id !== entry.id) from++
+    if (from < model.count) {
+      model.move(from, target, 1)
+      model.setProperty(target, 'entry', entry)
+    } else model.insert(target, {entry: entry})
+  }
+}
 function rows(entries, query, type, favorites) {
   var needle = String(query || '').toLowerCase()
   return entries.filter(function(e) {
@@ -22,4 +40,4 @@ function age(timestamp, now) {
   if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago'
   return Math.floor(seconds / 86400) + 'd ago'
 }
-if (typeof module !== 'undefined') module.exports = {rows: rows, palette: palette, age: age, types: types, typeIcon: typeIcon}
+if (typeof module !== 'undefined') module.exports = {sync: sync, rows: rows, palette: palette, age: age, types: types, typeIcon: typeIcon}
